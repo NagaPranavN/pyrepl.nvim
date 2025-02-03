@@ -10,13 +10,11 @@ function M.setup(opts)
 end
 
 function M.send_to_repl(code)
-  print("Sending code to REPL: " .. code)  -- Debug log
+  vim.notify("Sending code to REPL: " .. code, vim.log.levels.INFO)
   local success, response = pcall(function()
     return curl.post(M.config.url, {
       body = vim.fn.json_encode({code = code}),
-      headers = {
-        content_type = 'application/json',
-      },
+      headers = { content_type = 'application/json' },
     })
   end)
 
@@ -25,7 +23,7 @@ function M.send_to_repl(code)
     return
   end
 
-  print("Response status: " .. response.status)  -- Debug log
+  vim.notify("Response status: " .. response.status, vim.log.levels.INFO)
 
   if response.status ~= 200 then
     vim.api.nvim_err_writeln("Error: " .. response.status .. " - " .. response.body)
@@ -38,7 +36,7 @@ function M.send_to_repl(code)
     return
   end
 
-  print("Result from REPL: " .. vim.inspect(result))  -- Debug log for result
+  vim.notify("Result from REPL: " .. vim.inspect(result), vim.log.levels.INFO)
 end
 
 function M.get_visual_selection()
@@ -65,6 +63,13 @@ function M.run_selected_lines()
   else
     vim.api.nvim_err_writeln("No valid code selected")
   end
+end
+
+-- Create user command
+function M.create_command()
+  vim.api.nvim_create_user_command('RunSelectedCode', function()
+    M.run_selected_lines()
+  end, {})
 end
 
 return M
