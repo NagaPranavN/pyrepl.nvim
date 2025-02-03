@@ -2,7 +2,7 @@ local M = {}
 local curl = require('plenary.curl')
 
 M.config = {
-  url = 'http://localhost:5000/execute'
+  url = 'http://localhost:5001/execute'
 }
 
 function M.setup(opts)
