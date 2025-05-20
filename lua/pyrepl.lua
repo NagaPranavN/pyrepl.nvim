@@ -1,146 +1,141 @@
 local M = {}
 local curl = require('plenary.curl')
 
--- Default configuration
 M.config = {
   url = 'http://localhost:5000/execute',
-  show_response = true,  -- Whether to display REPL response in a float window
-  float_opts = {         -- Options for the float window
-    width = 80,
-    height = 20,
-    border = 'rounded',
-  }
+  show_output = true,  -- Show execution output
+  split_direction = 'vertical', -- 'vertical' or 'horizontal'
+  output_buffer_name = 'PythonOutput',
+  timeout = 10000, -- 10 seconds
 }
 
--- Setup function to merge user config with defaults
 function M.setup(opts)
-  M.config = vim.tbl_deep_extend('force', M.config, opts or {})
+  M.config = vim.tbl_extend('force', M.config, opts or {})
 end
 
--- Creates a floating window to show REPL output
-function M.show_output_in_float(output)
-  if not M.config.show_response then return end
-  
-  local buf = vim.api.nvim_create_buf(false, true)
-  local width = M.config.float_opts.width
-  local height = M.config.float_opts.height
-  local win_opts = {
-    relative = 'editor',
-    width = width,
-    height = height,
-    col = math.floor((vim.o.columns - width) / 2),
-    row = math.floor((vim.o.lines - height) / 2),
-    style = 'minimal',
-    border = M.config.float_opts.border,
-    title = " REPL Output ",
-  }
-  
-  -- Set buffer content
-  if type(output) == "table" then
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, output)
-  else
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(output, "\n"))
+function M.create_output_buffer()
+  if M.output_buffer and vim.api.nvim_buf_is_valid(M.output_buffer) then
+    return M.output_buffer
   end
   
-  -- Set buffer filetype for syntax highlighting
-  vim.api.nvim_buf_set_option(buf, 'filetype', 'python')
+  -- Create a new buffer
+  M.output_buffer = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(M.output_buffer, M.config.output_buffer_name)
   
-  -- Create window and set up autoclose
-  local win = vim.api.nvim_open_win(buf, true, win_opts)
-  vim.api.nvim_buf_set_keymap(buf, 'n', 'q', '<cmd>close<CR>', {noremap = true, silent = true})
-  vim.api.nvim_buf_set_keymap(buf, 'n', '<Esc>', '<cmd>close<CR>', {noremap = true, silent = true})
+  -- Set buffer options
+  vim.api.nvim_buf_set_option(M.output_buffer, 'buftype', 'nofile')
+  vim.api.nvim_buf_set_option(M.output_buffer, 'swapfile', false)
+  vim.api.nvim_buf_set_option(M.output_buffer, 'filetype', 'python-output')
   
-  vim.api.nvim_create_autocmd({"BufLeave"}, {
-    buffer = buf,
-    callback = function()
-      if vim.api.nvim_win_is_valid(win) then
-        vim.api.nvim_win_close(win, true)
-      end
-    end,
-    once = true,
-  })
-  
-  return win
+  return M.output_buffer
 end
 
--- Send code to Python REPL
+function M.display_output(output)
+  if not M.config.show_output then
+    return
+  end
+  
+  local buffer = M.create_output_buffer()
+  local lines = vim.split(output, '\n')
+  
+  -- Update buffer contents
+  vim.api.nvim_buf_set_lines(buffer, 0, -1, false, lines)
+  
+  -- Find window with buffer or create new split
+  local win_id = nil
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(win) == buffer then
+      win_id = win
+      break
+    end
+  end
+  
+  if not win_id then
+    -- Create a new split
+    local cmd = M.config.split_direction == 'vertical' 
+      and 'vsplit' 
+      or 'split'
+    
+    vim.cmd(cmd)
+    win_id = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(win_id, buffer)
+    vim.cmd('wincmd p') -- Go back to previous window
+  end
+end
+
 function M.send_to_repl(code)
-  vim.notify("Sending code to REPL...", vim.log.levels.INFO)
+  if type(code) == 'table' then
+    code = table.concat(code, '\n')
+  end
   
   local response = curl.post(M.config.url, {
     body = vim.fn.json_encode({code = code}),
     headers = {
       content_type = 'application/json',
     },
-    timeout = 10000,  -- 10 second timeout
+    timeout = M.config.timeout,
   })
 
-  if response.status ~= 200 then
-    vim.notify("REPL request failed: " .. (response.body or "Unknown error"), vim.log.levels.ERROR)
-    return
-  end
-
   local success, result = pcall(vim.fn.json_decode, response.body)
+  
   if not success then
-    vim.notify("Failed to parse REPL response", vim.log.levels.ERROR)
+    vim.notify("Error parsing REPL response: " .. response.body, vim.log.levels.ERROR)
     return
   end
   
-  if result.output then
-    M.show_output_in_float(result.output)
-  elseif result.error then
-    vim.notify("REPL error: " .. result.error, vim.log.levels.ERROR)
+  if result.error then
+    vim.notify("Python error: " .. result.error, vim.log.levels.ERROR)
+    M.display_output(result.error)
+  elseif result.output then
+    vim.notify("Python executed successfully", vim.log.levels.INFO)
+    M.display_output(result.output)
   end
   
   return result
 end
 
--- Get visual selection
 function M.get_visual_selection()
-  local _, srow, scol = unpack(vim.fn.getpos('v'))
-  local _, erow, ecol = unpack(vim.fn.getpos('.'))
-  local lines = {}
+  local _, srow, scol = unpack(vim.fn.getpos 'v')
+  local _, erow, ecol = unpack(vim.fn.getpos '.')
 
   if vim.fn.mode() == 'V' then
     if srow > erow then
-      lines = vim.api.nvim_buf_get_lines(0, erow - 1, srow, true)
+      return vim.api.nvim_buf_get_lines(0, erow - 1, srow, true)
     else
-      lines = vim.api.nvim_buf_get_lines(0, srow - 1, erow, true)
+      return vim.api.nvim_buf_get_lines(0, srow - 1, erow, true)
     end
-  elseif vim.fn.mode() == 'v' then
+  end
+
+  if vim.fn.mode() == 'v' then
     if srow < erow or (srow == erow and scol <= ecol) then
-      lines = vim.api.nvim_buf_get_text(0, srow - 1, scol - 1, erow - 1, ecol, {})
+      return vim.api.nvim_buf_get_text(0, srow - 1, scol - 1, erow - 1, ecol, {})
     else
-      lines = vim.api.nvim_buf_get_text(0, erow - 1, ecol - 1, srow - 1, scol, {})
+      return vim.api.nvim_buf_get_text(0, erow - 1, ecol - 1, srow - 1, scol, {})
     end
-  else
-    return nil
   end
   
-  return lines
+  -- Get current line if not in visual mode
+  if vim.fn.mode() ~= 'v' and vim.fn.mode() ~= 'V' then
+    local current_line = vim.api.nvim_get_current_line()
+    return {current_line}
+  end
+  
+  return {}
 end
 
--- Run selected lines in REPL
 function M.run_selected_lines()
   local code = M.get_visual_selection()
-  if not code or #code == 0 then
+  if #code > 0 then
+    M.send_to_repl(code)
+  else
     vim.notify("No code selected", vim.log.levels.WARN)
-    return
   end
-  
-  M.send_to_repl(table.concat(code, "\n"))
 end
 
--- Run current buffer in REPL
-function M.run_current_buffer()
-  local code = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-  M.send_to_repl(table.concat(code, "\n"))
-end
-
--- Run current line in REPL
-function M.run_current_line()
-  local line = vim.api.nvim_get_current_line()
-  M.send_to_repl(line)
+function M.run_buffer()
+  local current_buffer = vim.api.nvim_get_current_buf()
+  local lines = vim.api.nvim_buf_get_lines(current_buffer, 0, -1, false)
+  M.send_to_repl(lines)
 end
 
 return M
