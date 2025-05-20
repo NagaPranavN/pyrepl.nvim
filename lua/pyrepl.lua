@@ -1,3 +1,4 @@
+-- Python REPL integration for Neovim
 local M = {}
 local curl = require('plenary.curl')
 
